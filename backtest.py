@@ -105,7 +105,7 @@ def print_report(results):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("btc_with_adaptive_signals.csv", parse_dates=["timestamp"])   
+    df = pd.read_csv("btc_with_candlestick_signals.csv", parse_dates=["timestamp"])  
     results = backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=0.10)
     print_report(results)
 
