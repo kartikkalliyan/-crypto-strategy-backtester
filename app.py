@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
 from indicators import add_all_indicators
 from regime_detector import add_regime
@@ -88,54 +89,59 @@ def get_signal_history(signal_df, n=10):
 st.title("Live Trading Advisor")
 st.caption("Decision-support only. This tool never places trades -- you decide.")
 
+refresh_minutes = st.sidebar.selectbox(
+    "Auto-refresh every:", [5, 15, 30, 60], index=1
+)
+st_autorefresh(interval=refresh_minutes * 60 * 1000, key="auto_refresh")
+
 asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
 symbol = ASSET_OPTIONS[asset_label]
 
-if st.button("Check latest recommendation", type="primary"):
-    with st.spinner(f"Fetching live data for {symbol}..."):
-        df = fetch_data(symbol)
-        recommendation, reason, latest = get_recommendation(df)
+st.caption(f"Last checked: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+           f"(auto-refreshing every {refresh_minutes} min)")
 
-    color = {"BUY": "green", "SELL": "red", "HOLD": "gray"}[recommendation]
-    st.markdown(f"## :{color}[{recommendation}]")
-    st.write(reason)
+with st.spinner(f"Fetching live data for {symbol}..."):
+    df = fetch_data(symbol)
+    recommendation, reason, latest = get_recommendation(df)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Price", f"${latest['close']:.2f}")
-    col2.metric("MA20", f"${latest['MA_20']:.2f}")
-    col3.metric("MA50", f"${latest['MA_50']:.2f}")
+color = {"BUY": "green", "SELL": "red", "HOLD": "gray"}[recommendation]
+st.markdown(f"## :{color}[{recommendation}]")
+st.write(reason)
 
-    st.write(f"**Regime:** {latest['regime']}  |  **RSI:** {latest['RSI']:.1f}")
-    st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
+col1, col2, col3 = st.columns(3)
+col1.metric("Price", f"${latest['close']:.2f}")
+col2.metric("MA20", f"${latest['MA_20']:.2f}")
+col3.metric("MA50", f"${latest['MA_50']:.2f}")
 
-    st.line_chart(df.set_index("timestamp")[["close", "MA_20", "MA_50"]].tail(100))
+st.write(f"**Regime:** {latest['regime']}  |  **RSI:** {latest['RSI']:.1f}")
+st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
 
-    st.markdown("### Track record (last ~200 days)")
-    st.caption("How this exact strategy would have performed historically on this asset -- "
-               "so you can judge the recommendation with real context, not just trust it blindly.")
+st.line_chart(df.set_index("timestamp")[["close", "MA_20", "MA_50"]].tail(100))
 
-    track_results, signal_df = run_track_record(df)
-    tcol1, tcol2, tcol3 = st.columns(3)
-    tcol1.metric("Strategy return", f"{track_results['strategy_return_pct']:.2f}%")
-    tcol2.metric("Buy & hold return", f"{track_results['buy_hold_return_pct']:.2f}%")
-    tcol3.metric("Number of trades", track_results['num_trades'])
+st.markdown("### Track record (last ~200 days)")
+st.caption("How this exact strategy would have performed historically on this asset -- "
+           "so you can judge the recommendation with real context, not just trust it blindly.")
 
-    if track_results['strategy_return_pct'] > track_results['buy_hold_return_pct']:
-        st.success("Strategy beat buy-and-hold over this period.")
-    else:
-        st.warning("Strategy underperformed buy-and-hold over this period. "
-                   "This strategy is designed for downside protection during crashes, "
-                   "not necessarily for beating a strong bull run.")
+track_results, signal_df = run_track_record(df)
+tcol1, tcol2, tcol3 = st.columns(3)
+tcol1.metric("Strategy return", f"{track_results['strategy_return_pct']:.2f}%")
+tcol2.metric("Buy & hold return", f"{track_results['buy_hold_return_pct']:.2f}%")
+tcol3.metric("Number of trades", track_results['num_trades'])
 
-    st.markdown("### Recent signal history")
-    st.caption("The actual BUY/SELL signals this strategy generated for this asset recently.")
-    history = get_signal_history(signal_df, n=10)
-    if len(history) > 0:
-        st.dataframe(history, use_container_width=True, hide_index=True)
-    else:
-        st.write("No BUY/SELL signals in the recent history window.")
+if track_results['strategy_return_pct'] > track_results['buy_hold_return_pct']:
+    st.success("Strategy beat buy-and-hold over this period.")
 else:
-    st.info("Select an asset and click the button above to get a recommendation.")
+    st.warning("Strategy underperformed buy-and-hold over this period. "
+               "This strategy is designed for downside protection during crashes, "
+               "not necessarily for beating a strong bull run.")
+
+st.markdown("### Recent signal history")
+st.caption("The actual BUY/SELL signals this strategy generated for this asset recently.")
+history = get_signal_history(signal_df, n=10)
+if len(history) > 0:
+    st.dataframe(history, use_container_width=True, hide_index=True)
+else:
+    st.write("No BUY/SELL signals in the recent history window.")
 
 st.markdown("---")
 st.caption("Strategy: regime-filtered MA crossover (validated via train/test split, "
