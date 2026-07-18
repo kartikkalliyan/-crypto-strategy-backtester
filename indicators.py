@@ -63,13 +63,30 @@ def add_atr(df, period=14):
     return df
 
 
+def add_bollinger_bands(df, window=20, num_std=2):
+    mid = df["close"].rolling(window=window).mean()
+    std = df["close"].rolling(window=window).std()
+    df["BB_mid"] = mid
+    df["BB_upper"] = mid + num_std * std
+    df["BB_lower"] = mid - num_std * std
+    return df
+
+
+def add_breakout_levels(df, window=20):
+    df["High20"] = df["high"].rolling(window=window).max().shift(1)
+    df["Low20"] = df["low"].rolling(window=window).min().shift(1)
+    df["Vol_MA20"] = df["volume"].rolling(window=window).mean()
+    return df
+
+
 def add_all_indicators(df):
     df = add_moving_averages(df)
     df = add_rsi(df)
     df = add_macd(df)
     df = add_atr(df)
+    df = add_bollinger_bands(df)
+    df = add_breakout_levels(df)
     return df
-
 if __name__ == "__main__":
     df = pd.read_csv("btc_daily.csv", parse_dates=["timestamp"])
     df = add_all_indicators(df)

@@ -7,7 +7,13 @@ from streamlit_autorefresh import st_autorefresh
 
 from indicators import add_all_indicators
 from regime_detector import add_regime
-from strategy_v4_filtered_ma import generate_signals
+from strategy_v4_filtered_ma import generate_signals as ma_crossover_signals
+from candlestick_strategy import generate_candlestick_signals
+from strategy import generate_signals as rsi_signals
+from strategy_bollinger import generate_signals as bollinger_signals
+from strategy_macd import generate_signals as macd_signals
+from strategy_breakout import generate_signals as breakout_signals
+from strategy_buyhold import generate_signals as buyhold_signals
 from backtest import backtest
 
 st.set_page_config(page_title="Live Trading Advisor", layout="wide")
@@ -18,6 +24,22 @@ ASSET_OPTIONS = {
     "Solana (SOL)": "SOLUSDT",
     "Binance Coin (BNB)": "BNBUSDT",
     "PAX Gold (PAXG)": "PAXGUSDT",
+}
+
+STRATEGY_FUNCS = {
+    "MA Crossover (regime-filtered)": ma_crossover_signals,
+    "Candlestick + Trend Filter": generate_candlestick_signals,
+    "RSI Mean-Reversion": rsi_signals,
+    "Bollinger Bands": bollinger_signals,
+    "MACD Crossover": macd_signals,
+    "Volume-Confirmed Breakout": breakout_signals,
+    "Buy & Hold (baseline)": buyhold_signals,
+}
+
+RISK_STYLES = {
+    "No stop-loss": {},
+    "Fixed 10% stop-loss": {"stop_loss_pct": 0.10},
+    "Trailing 10% stop": {"trailing_stop_pct": 0.10},
 }
 
 
@@ -43,37 +65,30 @@ def fetch_data(symbol, interval="1d", limit=200):
     return df
 
 
-def get_recommendation(df):
+def prep_data(df):
     df = add_all_indicators(df)
     df = add_regime(df)
+    return df
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
 
-    golden_cross = (prev["MA_20"] <= prev["MA_50"]) and (latest["MA_20"] > latest["MA_50"])
-    death_cross = (prev["MA_20"] >= prev["MA_50"]) and (latest["MA_20"] < latest["MA_50"])
-    is_trending = latest["regime"] == "TRENDING"
+def get_recommendation(df, strategy_func):
+    signal_df = strategy_func(df.copy())
+    latest = signal_df.iloc[-1]
+    recommendation = latest["signal"]
 
-    if golden_cross and is_trending:
-        recommendation = "BUY"
-        reason = "A golden cross (MA20 crossed above MA50) just occurred during a confirmed TRENDING period."
-    elif death_cross and is_trending:
-        recommendation = "SELL"
-        reason = "A death cross (MA20 crossed below MA50) just occurred during a confirmed TRENDING period."
+    if recommendation == "BUY":
+        reason = "The selected strategy's entry conditions were met on the most recent closed candle."
+    elif recommendation == "SELL":
+        reason = "The selected strategy's exit conditions were met on the most recent closed candle."
     else:
-        recommendation = "HOLD"
-        if not is_trending:
-            reason = "Market is currently CHOPPY -- no confirmed trend, so no signal is trusted right now."
-        else:
-            reason = "No new crossover has occurred on the most recent candle."
+        reason = "No new entry/exit condition triggered on the most recent closed candle."
 
-    return recommendation, reason, latest
+    return recommendation, reason, latest, signal_df
 
 
-def run_track_record(df):
-    signal_df = generate_signals(df)
-    results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001,  trailing_stop_pct=0.10)
-    return results, signal_df
+def run_track_record(signal_df, risk_kwargs):
+    results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001, **risk_kwargs)
+    return results
 
 
 def get_signal_history(signal_df, n=10):
@@ -90,10 +105,12 @@ def get_signal_history(signal_df, n=10):
 @st.cache_data(ttl=300)
 def get_all_recommendations():
     rows = []
+    default_func = STRATEGY_FUNCS["MA Crossover (regime-filtered)"]
     for label, sym in ASSET_OPTIONS.items():
         try:
             df = fetch_data(sym)
-            rec, reason, latest = get_recommendation(df)
+            df = prep_data(df)
+            rec, reason, latest, _ = get_recommendation(df, default_func)
             rows.append({
                 "Asset": label,
                 "Price": f"${latest['close']:.2f}",
@@ -148,28 +165,22 @@ st.caption("Decision-support only. This tool never places trades -- you decide."
 
 with st.expander("What this strategy is actually good at (read before trusting it)"):
     st.markdown("""
-    This strategy (regime-filtered MA crossover with a 10% trailing stop)
+    The default combo (regime-filtered MA crossover with a 10% trailing stop)
     was tested across 5 assets and multiple market periods, including a
-    proper train/test split and a dedicated crash-period test. Here's
-    what was actually found:
+    proper train/test split and a dedicated crash-period test:
 
-    - **Strength:** during the 2022 crash, the trailing stop version lost
-      only ~10% while simply holding lost 65% -- a strong, real
-      downside-protection edge.
-    - **Strength:** on BTC and ETH specifically, this version meaningfully
-      beat the earlier fixed-stop version, and on ETH it even beat
-      buy-and-hold outright over the multi-year test.
+    - **Strength:** during the 2022 crash, it lost only ~10% while simply
+      holding lost 65% -- a strong, real downside-protection edge.
+    - **Strength:** on BTC and ETH specifically, it meaningfully beat the
+      fixed-stop version, and on ETH it even beat buy-and-hold outright.
     - **Known limitation:** on more volatile assets (SOL, BNB), the 10%
       trailing stop tends to get triggered by normal volatility, exiting
-      trades too early. It performs noticeably worse on these than on
-      calmer assets like BTC, ETH, or PAXG. We tested a volatility-adaptive
-      version (ATR-based) to fix this and it did not clearly help --
-      so this remains an open, documented limitation rather than a
-      solved problem.
-    - **Overall:** best suited to BTC/ETH/PAXG-type assets. Treat
-      recommendations for SOL/BNB with extra caution given this
-      known weakness.
+      trades too early.
+    - You now have 7 strategies and 3 risk styles to mix and match per
+      asset -- use the Track Record section below to compare combos
+      honestly before trusting any recommendation.
     """)
+
 refresh_minutes = st.sidebar.selectbox(
     "Auto-refresh every:", [5, 15, 30, 60], index=1
 )
@@ -179,6 +190,7 @@ st.caption(f"Last checked: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
            f"(auto-refreshing every {refresh_minutes} min)")
 
 st.markdown("### All assets at a glance")
+st.caption("Uses the default combo (MA Crossover + Trailing stop). Customize per asset below.")
 with st.spinner("Checking all assets..."):
     overview_df = get_all_recommendations()
 
@@ -205,16 +217,28 @@ asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
 symbol = ASSET_OPTIONS[asset_label]
 
 if symbol in ["SOLUSDT", "BNBUSDT"]:
-    st.warning(f"Known limitation: this strategy has tested noticeably worse on"
-               f"{asset_label} historically due to its higher volatility triggering "
-               f"the trailing stop too early. Treat recommendations here with extra caution.")
+    st.warning(f"Known limitation: the default trailing-stop MA crossover has tested "
+               f"noticeably worse on {asset_label} historically. Try a different "
+               f"strategy/risk combo below and compare.")
+
+scol1, scol2 = st.columns(2)
+strategy_choice = scol1.selectbox(
+    "Core strategy:", list(STRATEGY_FUNCS.keys()), key=f"strategy_{symbol}"
+)
+risk_choice = scol2.selectbox(
+    "Risk style:", list(RISK_STYLES.keys()), index=2, key=f"risk_{symbol}"
+)
+strategy_func = STRATEGY_FUNCS[strategy_choice]
+risk_kwargs = RISK_STYLES[risk_choice]
 
 with st.spinner(f"Fetching live data for {symbol}..."):
     df = fetch_data(symbol)
-    recommendation, reason, latest = get_recommendation(df)
+    df = prep_data(df)
+    recommendation, reason, latest, signal_df = get_recommendation(df, strategy_func)
 
 st.markdown(f"## {badge(recommendation, recommendation)}", unsafe_allow_html=True)
 st.write(reason)
+st.caption(f"Using: **{strategy_choice}** with **{risk_choice}**")
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Price", f"${latest['close']:.2f}")
@@ -226,40 +250,28 @@ st.markdown(f"**Regime:** {badge(latest['regime'], latest['regime'])}  |  **RSI:
 st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
 
 if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
-    st.caption("Context: markets are choppy about 80% of the time historically -- "
-               "this strategy is designed to sit out these periods rather than "
-               "guess, which is intentional, not a malfunction.")
-elif recommendation == "BUY":
-    st.caption("Context: this signal fires on a confirmed trend start. Historically, "
-               "trend-following signals like this capture real moves but can also "
-               "occasionally be a false start in a young trend.")
-elif recommendation == "SELL":
-    st.caption("Context: this signal is where the strategy has shown its clearest "
-               "value historically -- exiting before a real reversal, which mattered "
-               "most during the 2022 crash.")
+    st.caption("Context: markets are choppy about 80% of the time historically.")
 
 st.plotly_chart(make_candlestick_chart(df.tail(100), title=f"{asset_label} - Price with MA20/MA50"),
                 use_container_width=True)
 
 st.markdown("### Track record (last ~200 days)")
-st.caption("How this exact strategy would have performed historically on this asset -- "
-           "so you can judge the recommendation with real context, not just trust it blindly.")
+st.caption(f"How **{strategy_choice}** with **{risk_choice}** would have performed historically.")
 
-track_results, signal_df = run_track_record(df)
+track_results = run_track_record(signal_df, risk_kwargs)
 tcol1, tcol2, tcol3 = st.columns(3)
 tcol1.metric("Strategy return", f"{track_results['strategy_return_pct']:.2f}%")
 tcol2.metric("Buy & hold return", f"{track_results['buy_hold_return_pct']:.2f}%")
 tcol3.metric("Number of trades", track_results['num_trades'])
 
 if track_results['strategy_return_pct'] > track_results['buy_hold_return_pct']:
-    st.success("Strategy beat buy-and-hold over this period.")
+    st.success("This combo beat buy-and-hold over this period.")
 else:
-    st.warning("Strategy underperformed buy-and-hold over this period. "
-               "This strategy is designed for downside protection during crashes, "
-               "not necessarily for beating a strong bull run.")
+    st.warning("This combo underperformed buy-and-hold over this period. "
+               "Try a different strategy/risk combo above to compare.")
 
 st.markdown("### Recent signal history")
-st.caption("The actual BUY/SELL signals this strategy generated for this asset recently.")
+st.caption(f"The actual BUY/SELL signals **{strategy_choice}** generated for this asset recently.")
 history = get_signal_history(signal_df, n=10)
 if len(history) > 0:
     st.dataframe(history, use_container_width=True, hide_index=True)
@@ -267,5 +279,6 @@ else:
     st.write("No BUY/SELL signals in the recent history window.")
 
 st.markdown("---")
-st.caption("Strategy: regime-filtered MA crossover (validated via train/test split, "
-           "2022 crash test). Past performance does not guarantee future results.")
+st.caption("Pick a strategy and risk style above for each asset -- your choice is "
+           "remembered per asset as you switch between them. Past performance does "
+           "not guarantee future results.")
