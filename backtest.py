@@ -1,7 +1,8 @@
 import pandas as pd
 
 
-def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None, trailing_stop_pct=None):
+def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
+             trailing_stop_pct=None, trailing_stop_col=None, atr_multiplier=2.0):
     cash = starting_cash
     btc_held = 0.0
     in_position = False
@@ -31,9 +32,14 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None, trail
                 })
                 continue
 
-        if in_position and trailing_stop_pct is not None:
+        if in_position and (trailing_stop_pct is not None or trailing_stop_col is not None):
+            if trailing_stop_col is not None:
+                current_trailing_pct = row[trailing_stop_col] * atr_multiplier
+            else:
+                current_trailing_pct = trailing_stop_pct
+
             drop_from_peak = (peak_price - price) / peak_price
-            if drop_from_peak >= trailing_stop_pct:
+            if drop_from_peak >= current_trailing_pct:
                 cash = (btc_held * price) * (1 - fee_rate)
                 btc_held = 0.0
                 in_position = False
@@ -102,13 +108,11 @@ def print_report(results):
         print("Strategy BEAT buy-and-hold.")
     else:
         print("Strategy UNDERPERFORMED buy-and-hold.")
-        print("(This is a very common, honest result -- most simple")
-        print(" rule-based strategies don't beat just holding.)")
 
 
 if __name__ == "__main__":
     df = pd.read_csv("btc_with_filtered_ma_signals.csv", parse_dates=["timestamp"])
-    results = backtest(df, starting_cash=1000.0, fee_rate=0.001, trailing_stop_pct=0.10)
+    results = backtest(df, starting_cash=1000.0, fee_rate=0.001, trailing_stop_col="ATR_pct", atr_multiplier=2.0)
     print_report(results)
 
     trade_df = pd.DataFrame(results["trade_log"])

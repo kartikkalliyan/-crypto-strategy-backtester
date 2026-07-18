@@ -51,12 +51,24 @@ def add_macd(df, fast=12, slow=26, signal=9):
     return df
 
 
+def add_atr(df, period=14):
+    high_low = df["high"] - df["low"]
+    high_close_prev = (df["high"] - df["close"].shift(1)).abs()
+    low_close_prev = (df["low"] - df["close"].shift(1)).abs()
+
+    true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+    df["ATR"] = true_range.rolling(window=period).mean()
+    df["ATR_pct"] = df["ATR"] / df["close"]
+
+    return df
+
+
 def add_all_indicators(df):
     df = add_moving_averages(df)
     df = add_rsi(df)
     df = add_macd(df)
+    df = add_atr(df)
     return df
-
 
 if __name__ == "__main__":
     df = pd.read_csv("btc_daily.csv", parse_dates=["timestamp"])
