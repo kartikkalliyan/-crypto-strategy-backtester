@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -111,6 +110,23 @@ def get_all_recommendations():
 st.title("Live Trading Advisor")
 st.caption("Decision-support only. This tool never places trades -- you decide.")
 
+with st.expander("What this strategy is actually good at (read before trusting it)"):
+    st.markdown("""
+    This strategy (regime-filtered MA crossover) was tested across 5 assets
+    and multiple market periods, including a proper train/test split and a
+    dedicated crash-period test. Here's what was actually found:
+
+    - **Strength:** during the 2022 crash, it lost 47% while simply holding
+      lost 65% -- a real, meaningful downside-protection edge.
+    - **Weakness:** during strong sustained bull runs (which crypto has had
+      a lot of), it consistently underperforms simply buying and holding,
+      because it exits and re-enters, missing some of the upside.
+    - **Overall:** it trades some upside for downside protection. It is
+      *not* designed to beat a strong bull market -- it's designed to
+      avoid the worst of a crash. Treat any BUY/SELL signal with that
+      trade-off in mind, not as a promise of outperformance.
+    """)
+
 refresh_minutes = st.sidebar.selectbox(
     "Auto-refresh every:", [5, 15, 30, 60], index=1
 )
@@ -160,6 +176,19 @@ col3.metric("MA50", f"${latest['MA_50']:.2f}")
 
 st.write(f"**Regime:** {latest['regime']}  |  **RSI:** {latest['RSI']:.1f}")
 st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
+
+if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
+    st.caption("Context: markets are choppy about 80% of the time historically -- "
+               "this strategy is designed to sit out these periods rather than "
+               "guess, which is intentional, not a malfunction.")
+elif recommendation == "BUY":
+    st.caption("Context: this signal fires on a confirmed trend start. Historically, "
+               "trend-following signals like this capture real moves but can also "
+               "occasionally be a false start in a young trend.")
+elif recommendation == "SELL":
+    st.caption("Context: this signal is where the strategy has shown its clearest "
+               "value historically -- exiting before a real reversal, which mattered "
+               "most during the 2022 crash.")
 
 st.line_chart(df.set_index("timestamp")[["close", "MA_20", "MA_50"]].tail(100))
 
