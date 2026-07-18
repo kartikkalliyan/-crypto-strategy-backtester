@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -86,6 +87,27 @@ def get_signal_history(signal_df, n=10):
     return history.iloc[::-1]
 
 
+@st.cache_data(ttl=300)
+def get_all_recommendations():
+    rows = []
+    for label, sym in ASSET_OPTIONS.items():
+        try:
+            df = fetch_data(sym)
+            rec, reason, latest = get_recommendation(df)
+            rows.append({
+                "Asset": label,
+                "Price": f"${latest['close']:.2f}",
+                "Regime": latest["regime"],
+                "Recommendation": rec,
+            })
+        except Exception as e:
+            rows.append({
+                "Asset": label, "Price": "N/A", "Regime": "N/A",
+                "Recommendation": f"Error: {e}"
+            })
+    return pd.DataFrame(rows)
+
+
 st.title("Live Trading Advisor")
 st.caption("Decision-support only. This tool never places trades -- you decide.")
 
@@ -94,11 +116,34 @@ refresh_minutes = st.sidebar.selectbox(
 )
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="auto_refresh")
 
-asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
-symbol = ASSET_OPTIONS[asset_label]
-
 st.caption(f"Last checked: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
            f"(auto-refreshing every {refresh_minutes} min)")
+
+st.markdown("### All assets at a glance")
+with st.spinner("Checking all assets..."):
+    overview_df = get_all_recommendations()
+
+
+def highlight_recommendation(val):
+    if val == "BUY":
+        return "color: green; font-weight: bold"
+    elif val == "SELL":
+        return "color: red; font-weight: bold"
+    elif val == "HOLD":
+        return "color: gray"
+    return ""
+
+
+st.dataframe(
+    overview_df.style.map(highlight_recommendation, subset=["Recommendation"]),
+    use_container_width=True, hide_index=True
+)
+
+st.markdown("---")
+st.markdown("### Asset detail")
+
+asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
+symbol = ASSET_OPTIONS[asset_label]
 
 with st.spinner(f"Fetching live data for {symbol}..."):
     df = fetch_data(symbol)
