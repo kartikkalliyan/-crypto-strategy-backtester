@@ -1,29 +1,12 @@
-"""
-PHASE 5: Backtesting.
-
-This answers the real question: if you had followed every BUY/SELL
-signal exactly, with real money and real trading fees, would you have
-ended up ahead or behind -- compared to simply buying BTC once and
-holding it the whole time?
-
-No live trading, no predictions -- just an honest historical check.
-"""
-
 import pandas as pd
 
 
-def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None):
-    """
-    starting_cash : hypothetical starting capital (e.g. $1000)
-    fee_rate      : trading fee per transaction (0.001 = 0.1%, Binance's real spot rate)
-    stop_loss_pct : if set (e.g. 0.10 for 10%), force-sell immediately if
-                    price drops this much from the entry price, regardless
-                    of what the strategy's own SELL signal says. None = no stop-loss.
-    """
+def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None, trailing_stop_pct=None):
     cash = starting_cash
     btc_held = 0.0
     in_position = False
     entry_price = None
+    peak_price = None
 
     trade_log = []
 
@@ -31,7 +14,9 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None):
         price = row["close"]
         signal = row["signal"]
 
-        # --- Stop-loss check happens FIRST, before the normal signal logic ---
+        if in_position:
+            peak_price = max(peak_price, price)
+
         if in_position and stop_loss_pct is not None:
             drop_from_entry = (entry_price - price) / entry_price
             if drop_from_entry >= stop_loss_pct:
@@ -39,8 +24,23 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None):
                 btc_held = 0.0
                 in_position = False
                 entry_price = None
+                peak_price = None
                 trade_log.append({
                     "date": row["timestamp"], "action": "STOP_LOSS_SELL",
+                    "price": price, "btc_held": btc_held, "cash": cash
+                })
+                continue
+
+        if in_position and trailing_stop_pct is not None:
+            drop_from_peak = (peak_price - price) / peak_price
+            if drop_from_peak >= trailing_stop_pct:
+                cash = (btc_held * price) * (1 - fee_rate)
+                btc_held = 0.0
+                in_position = False
+                entry_price = None
+                peak_price = None
+                trade_log.append({
+                    "date": row["timestamp"], "action": "TRAILING_STOP_SELL",
                     "price": price, "btc_held": btc_held, "cash": cash
                 })
                 continue
@@ -51,6 +51,7 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None):
             cash = 0.0
             in_position = True
             entry_price = price
+            peak_price = price
             trade_log.append({
                 "date": row["timestamp"], "action": "BUY",
                 "price": price, "btc_held": btc_held, "cash": cash
@@ -61,6 +62,7 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None):
             btc_held = 0.0
             in_position = False
             entry_price = None
+            peak_price = None
             trade_log.append({
                 "date": row["timestamp"], "action": "SELL",
                 "price": price, "btc_held": btc_held, "cash": cash
@@ -105,8 +107,8 @@ def print_report(results):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("btc_with_filtered_ma_signals.csv", parse_dates=["timestamp"])  
-    results = backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=0.10)
+    df = pd.read_csv("btc_with_filtered_ma_signals.csv", parse_dates=["timestamp"])
+    results = backtest(df, starting_cash=1000.0, fee_rate=0.001, trailing_stop_pct=0.10)
     print_report(results)
 
     trade_df = pd.DataFrame(results["trade_log"])
