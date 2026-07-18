@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
@@ -9,7 +10,7 @@ from regime_detector import add_regime
 from strategy_v4_filtered_ma import generate_signals
 from backtest import backtest
 
-st.set_page_config(page_title="Live Trading Advisor", layout="centered")
+st.set_page_config(page_title="Live Trading Advisor", layout="wide")
 
 ASSET_OPTIONS = {
     "Bitcoin (BTC)": "BTCUSDT",
@@ -107,6 +108,41 @@ def get_all_recommendations():
     return pd.DataFrame(rows)
 
 
+def make_candlestick_chart(df, title=""):
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df["timestamp"], open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"], name="Price",
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["timestamp"], y=df["MA_20"], name="MA20",
+        line=dict(color="#ffa726", width=1.5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["timestamp"], y=df["MA_50"], name="MA50",
+        line=dict(color="#42a5f5", width=1.5)
+    ))
+    fig.update_layout(
+        title=title, template="plotly_dark", height=450,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+    )
+    return fig
+
+
+def badge(text, kind):
+    colors = {
+        "BUY": ("#0f5132", "#75dd9a"), "SELL": ("#5c1a1a", "#f28b8b"),
+        "HOLD": ("#3a3a3a", "#bbbbbb"),
+        "TRENDING": ("#0f5132", "#75dd9a"), "CHOPPY": ("#4a3b0f", "#e0c060"),
+    }
+    bg, fg = colors.get(kind, ("#3a3a3a", "#bbbbbb"))
+    return (f'<span style="background-color:{bg}; color:{fg}; padding:4px 12px; '
+            f'border-radius:12px; font-weight:600; font-size:0.9em;">{text}</span>')
+
+
 st.title("Live Trading Advisor")
 st.caption("Decision-support only. This tool never places trades -- you decide.")
 
@@ -165,8 +201,7 @@ with st.spinner(f"Fetching live data for {symbol}..."):
     df = fetch_data(symbol)
     recommendation, reason, latest = get_recommendation(df)
 
-color = {"BUY": "green", "SELL": "red", "HOLD": "gray"}[recommendation]
-st.markdown(f"## :{color}[{recommendation}]")
+st.markdown(f"## {badge(recommendation, recommendation)}", unsafe_allow_html=True)
 st.write(reason)
 
 col1, col2, col3 = st.columns(3)
@@ -174,7 +209,8 @@ col1.metric("Price", f"${latest['close']:.2f}")
 col2.metric("MA20", f"${latest['MA_20']:.2f}")
 col3.metric("MA50", f"${latest['MA_50']:.2f}")
 
-st.write(f"**Regime:** {latest['regime']}  |  **RSI:** {latest['RSI']:.1f}")
+st.markdown(f"**Regime:** {badge(latest['regime'], latest['regime'])}  |  **RSI:** {latest['RSI']:.1f}",
+            unsafe_allow_html=True)
 st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
 
 if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
@@ -190,7 +226,8 @@ elif recommendation == "SELL":
                "value historically -- exiting before a real reversal, which mattered "
                "most during the 2022 crash.")
 
-st.line_chart(df.set_index("timestamp")[["close", "MA_20", "MA_50"]].tail(100))
+st.plotly_chart(make_candlestick_chart(df.tail(100), title=f"{asset_label} - Price with MA20/MA50"),
+                use_container_width=True)
 
 st.markdown("### Track record (last ~200 days)")
 st.caption("How this exact strategy would have performed historically on this asset -- "
