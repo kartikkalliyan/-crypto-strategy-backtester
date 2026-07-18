@@ -72,7 +72,7 @@ def get_recommendation(df):
 
 def run_track_record(df):
     signal_df = generate_signals(df)
-    results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=0.10)
+    results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001,  trailing_stop_pct=0.10)
     return results, signal_df
 
 
@@ -148,21 +148,28 @@ st.caption("Decision-support only. This tool never places trades -- you decide."
 
 with st.expander("What this strategy is actually good at (read before trusting it)"):
     st.markdown("""
-    This strategy (regime-filtered MA crossover) was tested across 5 assets
-    and multiple market periods, including a proper train/test split and a
-    dedicated crash-period test. Here's what was actually found:
+    This strategy (regime-filtered MA crossover with a 10% trailing stop)
+    was tested across 5 assets and multiple market periods, including a
+    proper train/test split and a dedicated crash-period test. Here's
+    what was actually found:
 
-    - **Strength:** during the 2022 crash, it lost 47% while simply holding
-      lost 65% -- a real, meaningful downside-protection edge.
-    - **Weakness:** during strong sustained bull runs (which crypto has had
-      a lot of), it consistently underperforms simply buying and holding,
-      because it exits and re-enters, missing some of the upside.
-    - **Overall:** it trades some upside for downside protection. It is
-      *not* designed to beat a strong bull market -- it's designed to
-      avoid the worst of a crash. Treat any BUY/SELL signal with that
-      trade-off in mind, not as a promise of outperformance.
+    - **Strength:** during the 2022 crash, the trailing stop version lost
+      only ~10% while simply holding lost 65% -- a strong, real
+      downside-protection edge.
+    - **Strength:** on BTC and ETH specifically, this version meaningfully
+      beat the earlier fixed-stop version, and on ETH it even beat
+      buy-and-hold outright over the multi-year test.
+    - **Known limitation:** on more volatile assets (SOL, BNB), the 10%
+      trailing stop tends to get triggered by normal volatility, exiting
+      trades too early. It performs noticeably worse on these than on
+      calmer assets like BTC, ETH, or PAXG. We tested a volatility-adaptive
+      version (ATR-based) to fix this and it did not clearly help --
+      so this remains an open, documented limitation rather than a
+      solved problem.
+    - **Overall:** best suited to BTC/ETH/PAXG-type assets. Treat
+      recommendations for SOL/BNB with extra caution given this
+      known weakness.
     """)
-
 refresh_minutes = st.sidebar.selectbox(
     "Auto-refresh every:", [5, 15, 30, 60], index=1
 )
@@ -196,6 +203,11 @@ st.markdown("### Asset detail")
 
 asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
 symbol = ASSET_OPTIONS[asset_label]
+
+if symbol in ["SOLUSDT", "BNBUSDT"]:
+    st.warning(f"Known limitation: this strategy has tested noticeably worse on"
+               f"{asset_label} historically due to its higher volatility triggering "
+               f"the trailing stop too early. Treat recommendations here with extra caution.")
 
 with st.spinner(f"Fetching live data for {symbol}..."):
     df = fetch_data(symbol)
