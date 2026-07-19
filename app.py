@@ -1,3 +1,19 @@
+"""
+LIVE TRADING ADVISOR - Streamlit UI
+
+Lets you pick an asset (or type a custom one) from a dropdown, choose
+a strategy and risk style, fetches live price data, and shows a clear
+BUY/SELL/HOLD recommendation with reasoning and a historical track
+record for that exact combination.
+
+This is a DECISION-SUPPORT tool. It never places trades or touches
+real money -- you decide whether to act on any recommendation shown.
+
+Run with:
+    pip install streamlit streamlit-autorefresh plotly
+    streamlit run app.py
+"""
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -60,9 +76,58 @@ def fetch_data(symbol, interval="1d", limit=200):
         df[col] = df[col].astype(float)
     df = df[["open_time", "open", "high", "low", "close", "volume"]]
     df = df.rename(columns={"open_time": "timestamp"})
-
     df = df.iloc[:-1].reset_index(drop=True)
     return df
+
+
+@st.cache_data(ttl=300)
+def fetch_data_paginated(symbol, days, interval="1d"):
+    all_rows = []
+    end_time_ms = int(datetime.now().timestamp() * 1000)
+    earliest_needed = datetime.now().timestamp() - (days * 86400)
+
+    while True:
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": symbol, "interval": interval, "limit": 1000, "endTime": end_time_ms}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        batch = response.json()
+        if not batch:
+            break
+
+        all_rows = batch + all_rows
+        oldest_time = batch[0][0]
+        if (oldest_time / 1000) <= earliest_needed:
+            break
+        end_time_ms = oldest_time - 1
+
+    columns = ["open_time", "open", "high", "low", "close", "volume",
+               "close_time", "quote_asset_volume", "num_trades",
+               "taker_buy_base", "taker_buy_quote", "ignore"]
+    df = pd.DataFrame(all_rows, columns=columns)
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+    df = df[["open_time", "open", "high", "low", "close", "volume"]]
+    df = df.rename(columns={"open_time": "timestamp"})
+    df = df.drop_duplicates(subset="timestamp").sort_values("timestamp").reset_index(drop=True)
+    df = df.iloc[:-1].reset_index(drop=True)
+    return df
+
+
+def find_data_for_trade_target(symbol, strategy_func, target_trades, max_days=3000):
+    days = 300
+    while True:
+        df = fetch_data_paginated(symbol, days)
+        prepped = prep_data(df.copy())
+        signal_df = strategy_func(prepped)
+        num_trades = len(signal_df[signal_df["signal"] != "HOLD"])
+
+        ran_out_of_history = len(df) < days * 0.9
+        if num_trades >= target_trades or days >= max_days or ran_out_of_history:
+            return signal_df, num_trades, days
+
+        days = min(days * 2, max_days)
 
 
 def prep_data(df):
@@ -71,18 +136,20 @@ def prep_data(df):
     return df
 
 
+def reason_for_signal(recommendation):
+    if recommendation == "BUY":
+        return "The selected strategy's entry conditions were met on the most recent closed candle."
+    elif recommendation == "SELL":
+        return "The selected strategy's exit conditions were met on the most recent closed candle."
+    else:
+        return "No new entry/exit condition triggered on the most recent closed candle."
+
+
 def get_recommendation(df, strategy_func):
     signal_df = strategy_func(df.copy())
     latest = signal_df.iloc[-1]
     recommendation = latest["signal"]
-
-    if recommendation == "BUY":
-        reason = "The selected strategy's entry conditions were met on the most recent closed candle."
-    elif recommendation == "SELL":
-        reason = "The selected strategy's exit conditions were met on the most recent closed candle."
-    else:
-        reason = "No new entry/exit condition triggered on the most recent closed candle."
-
+    reason = reason_for_signal(recommendation)
     return recommendation, reason, latest, signal_df
 
 
@@ -176,9 +243,10 @@ with st.expander("What this strategy is actually good at (read before trusting i
     - **Known limitation:** on more volatile assets (SOL, BNB), the 10%
       trailing stop tends to get triggered by normal volatility, exiting
       trades too early.
-    - You now have 7 strategies and 3 risk styles to mix and match per
-      asset -- use the Track Record section below to compare combos
-      honestly before trusting any recommendation.
+    - You now have 7 strategies, 3 risk styles, and 2 ways to size the
+      backtest window (by days or by target trade count) to mix and
+      match per asset -- use the Track Record section below to compare
+      combos honestly before trusting any recommendation.
     """)
 
 refresh_minutes = st.sidebar.selectbox(
@@ -244,8 +312,9 @@ else:
 
 if symbol in ["SOLUSDT", "BNBUSDT"]:
     st.warning(f"Known limitation: the default trailing-stop MA crossover has tested "
-               f"noticeably worse on {asset_label} historically. Try a different "
-               f"strategy/risk combo below and compare.")
+               f"noticeably worse on {asset_label} historically due to its higher "
+               f"volatility. Consider trying a different strategy/risk combo below, "
+               f"or treat recommendations here with extra caution.")
 
 scol1, scol2 = st.columns(2)
 strategy_choice = scol1.selectbox(
@@ -257,17 +326,45 @@ risk_choice = scol2.selectbox(
 strategy_func = STRATEGY_FUNCS[strategy_choice]
 risk_kwargs = RISK_STYLES[risk_choice]
 
-lookback_days = st.slider(
-    "Number of days to analyze/backtest:", min_value=60, max_value=1000, value=200, step=10,
-    key=f"lookback_{symbol}",
-    help="More days = a longer, more thorough backtest, but the recommendation itself "
-         "is always based on the most recent candle regardless of this setting."
+mode = st.radio(
+    "Backtest window:", ["By number of days", "By number of trades"],
+    horizontal=True, key=f"mode_{symbol}"
 )
 
-with st.spinner(f"Fetching live data for {symbol}..."):
-    df = fetch_data(symbol, limit=lookback_days)
-    df = prep_data(df)
-    recommendation, reason, latest, signal_df = get_recommendation(df, strategy_func)
+if mode == "By number of days":
+    lookback_days = st.slider(
+        "Number of days to analyze/backtest:", min_value=60, max_value=1000, value=200, step=10,
+        key=f"lookback_{symbol}"
+    )
+    with st.spinner(f"Fetching live data for {symbol}..."):
+        df = fetch_data(symbol, limit=lookback_days)
+        df = prep_data(df)
+        recommendation, reason, latest, signal_df = get_recommendation(df, strategy_func)
+    window_label = f"last {lookback_days} days"
+else:
+    target_trades = st.number_input(
+        "Target number of trades to test:", min_value=5, max_value=500, value=20, step=5,
+        key=f"target_trades_{symbol}",
+        help="The app will keep pulling further back in history until this many "
+             "BUY/SELL trades have occurred for the selected strategy."
+    )
+    with st.spinner(f"Searching history for {target_trades} trades... this may take a moment"):
+        signal_df, achieved_trades, days_used = find_data_for_trade_target(
+            symbol, strategy_func, target_trades
+        )
+        latest = signal_df.iloc[-1]
+        recommendation = latest["signal"]
+        reason = reason_for_signal(recommendation)
+        df = signal_df
+
+    if achieved_trades < target_trades:
+        st.info(f"Only found {achieved_trades} trades in {days_used} days of available "
+                f"history (couldn't reach {target_trades} -- this asset may not have that "
+                f"much history, or this strategy trades rarely).")
+    else:
+        st.caption(f"Found {achieved_trades} trades within {days_used} days of history.")
+    window_label = f"{achieved_trades} trades ({days_used} days of history)"
+
 st.markdown(f"## {badge(recommendation, recommendation)}", unsafe_allow_html=True)
 st.write(reason)
 st.caption(f"Using: **{strategy_choice}** with **{risk_choice}**")
@@ -282,14 +379,19 @@ st.markdown(f"**Regime:** {badge(latest['regime'], latest['regime'])}  |  **RSI:
 st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
 
 if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
-    st.caption("Context: markets are choppy about 80% of the time historically.")
+    st.caption("Context: markets are choppy about 80% of the time historically -- "
+               "many strategies are designed to sit out these periods rather than "
+               "guess, which may be intentional rather than a malfunction.")
 
-st.plotly_chart(make_candlestick_chart(df, title=f"{asset_label} - Price with MA20/MA50"),
+st.plotly_chart(make_candlestick_chart(df.tail(300), title=f"{asset_label} - Price with MA20/MA50"),
                 use_container_width=True)
-st.caption(f"Chart shows all {lookback_days} days selected. Use the range slider "
-           f"below the chart to zoom into any section.")
-st.markdown(f"### Track record (last {lookback_days} days)")
-st.caption(f"How **{strategy_choice}** with **{risk_choice}** would have performed historically.")
+st.caption("Chart shows up to the last 300 candles for readability. "
+           "The backtest below uses the full window you selected above.")
+
+st.markdown(f"### Track record ({window_label})")
+st.caption(f"How **{strategy_choice}** with **{risk_choice}** would have performed "
+           f"historically on this asset -- so you can judge the recommendation with "
+           f"real context, not just trust it blindly.")
 
 track_results = run_track_record(signal_df, risk_kwargs)
 tcol1, tcol2, tcol3 = st.columns(3)
@@ -312,6 +414,6 @@ else:
     st.write("No BUY/SELL signals in the recent history window.")
 
 st.markdown("---")
-st.caption("Pick a strategy and risk style above for each asset -- your choice is "
-           "remembered per asset as you switch between them. Past performance does "
-           "not guarantee future results.")
+st.caption("Pick a strategy, risk style, and backtest window above for each asset -- "
+           "your choices are remembered per asset as you switch between them. "
+           "Past performance does not guarantee future results.")
