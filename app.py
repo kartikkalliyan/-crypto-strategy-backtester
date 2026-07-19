@@ -142,7 +142,7 @@ def make_candlestick_chart(df, title=""):
     ))
     fig.update_layout(
         title=title, template="plotly_dark", height=450,
-        xaxis_rangeslider_visible=False,
+        xaxis_rangeslider_visible=True,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
@@ -213,8 +213,34 @@ st.dataframe(
 st.markdown("---")
 st.markdown("### Asset detail")
 
-asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()))
-symbol = ASSET_OPTIONS[asset_label]
+asset_label = st.selectbox("Choose an asset:", list(ASSET_OPTIONS.keys()) + ["Custom (type any symbol)"])
+
+if asset_label == "Custom (type any symbol)":
+    custom_input = st.text_input(
+        "Enter a Binance trading pair symbol:",
+        placeholder="e.g. DOGE, ADA, XRP, MATIC, LINK...",
+        help="Just the coin name is fine -- USDT will be added automatically if you leave it off."
+    )
+    if not custom_input:
+        st.info("Type a symbol above to continue (e.g. DOGE, ADA, XRP).")
+        st.stop()
+
+    symbol = custom_input.strip().upper().replace(" ", "")
+    if not symbol.endswith("USDT"):
+        symbol = symbol + "USDT"
+    asset_label = symbol
+
+    try:
+        _test_df = fetch_data(symbol, limit=5)
+        if len(_test_df) == 0:
+            st.error(f"'{symbol}' returned no data. Check the symbol is correct (e.g. DOGE, not DOGECOIN).")
+            st.stop()
+    except Exception as e:
+        st.error(f"Couldn't find '{symbol}' on Binance. Check the spelling -- e.g. try 'DOGE' or 'ADA'. "
+                  f"(Error: {e})")
+        st.stop()
+else:
+    symbol = ASSET_OPTIONS[asset_label]
 
 if symbol in ["SOLUSDT", "BNBUSDT"]:
     st.warning(f"Known limitation: the default trailing-stop MA crossover has tested "
@@ -231,11 +257,17 @@ risk_choice = scol2.selectbox(
 strategy_func = STRATEGY_FUNCS[strategy_choice]
 risk_kwargs = RISK_STYLES[risk_choice]
 
+lookback_days = st.slider(
+    "Number of days to analyze/backtest:", min_value=60, max_value=1000, value=200, step=10,
+    key=f"lookback_{symbol}",
+    help="More days = a longer, more thorough backtest, but the recommendation itself "
+         "is always based on the most recent candle regardless of this setting."
+)
+
 with st.spinner(f"Fetching live data for {symbol}..."):
-    df = fetch_data(symbol)
+    df = fetch_data(symbol, limit=lookback_days)
     df = prep_data(df)
     recommendation, reason, latest, signal_df = get_recommendation(df, strategy_func)
-
 st.markdown(f"## {badge(recommendation, recommendation)}", unsafe_allow_html=True)
 st.write(reason)
 st.caption(f"Using: **{strategy_choice}** with **{risk_choice}**")
@@ -252,10 +284,11 @@ st.caption(f"Based on most recent closed candle: {latest['timestamp'].date()}")
 if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
     st.caption("Context: markets are choppy about 80% of the time historically.")
 
-st.plotly_chart(make_candlestick_chart(df.tail(100), title=f"{asset_label} - Price with MA20/MA50"),
+st.plotly_chart(make_candlestick_chart(df, title=f"{asset_label} - Price with MA20/MA50"),
                 use_container_width=True)
-
-st.markdown("### Track record (last ~200 days)")
+st.caption(f"Chart shows all {lookback_days} days selected. Use the range slider "
+           f"below the chart to zoom into any section.")
+st.markdown(f"### Track record (last {lookback_days} days)")
 st.caption(f"How **{strategy_choice}** with **{risk_choice}** would have performed historically.")
 
 track_results = run_track_record(signal_df, risk_kwargs)
