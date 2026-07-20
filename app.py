@@ -18,6 +18,9 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
+import json
+import smtplib
+from email.mime.text import MIMEText
 import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -202,6 +205,72 @@ def add_journal_entry(date, asset, strategy, action, price, notes):
     return journal
 
 
+LAST_SIGNAL_FILE = "last_signals.json"
+
+
+def load_last_signals():
+    if os.path.isfile(LAST_SIGNAL_FILE):
+        with open(LAST_SIGNAL_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_last_signals(data):
+    with open(LAST_SIGNAL_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def send_email_alert(subject, body):
+    """
+    Sends an email using credentials from .streamlit/secrets.toml.
+    Returns (success: bool, message: str) so the UI can show what happened
+    without crashing if email isn't configured.
+    """
+    try:
+        email_from = st.secrets["email_from"]
+        email_password = st.secrets["email_password"]
+        email_to = st.secrets["email_to"]
+    except Exception:
+        return False, "Email not configured (missing .streamlit/secrets.toml)."
+
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = email_from
+        msg["To"] = email_to
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(email_from, email_password)
+            server.sendmail(email_from, email_to, msg.as_string())
+        return True, "Email sent."
+    except Exception as e:
+        return False, f"Email failed to send: {e}"
+
+
+def check_and_alert(symbol, strategy_choice, recommendation, latest_price):
+    """
+    Compares today's recommendation to the last one seen for this exact
+    symbol+strategy combo. If it changed to a real BUY or SELL (not just
+    still HOLD), sends an email alert and updates the stored state.
+    """
+    last_signals = load_last_signals()
+    key = f"{symbol}_{strategy_choice}"
+    previous = last_signals.get(key)
+
+    alert_sent = None
+    if recommendation in ["BUY", "SELL"] and recommendation != previous:
+        subject = f"Trading Advisor Alert: {recommendation} signal on {symbol}"
+        body = (f"{strategy_choice} just generated a {recommendation} signal "
+                f"for {symbol} at price ${latest_price:.2f}.\n\n"
+                f"This is decision-support only -- review before acting.")
+        success, message = send_email_alert(subject, body)
+        alert_sent = (success, message)
+
+    last_signals[key] = recommendation
+    save_last_signals(last_signals)
+    return alert_sent
+
+
 def get_signal_history(signal_df, n=10):
     history = signal_df[signal_df["signal"] != "HOLD"].copy()
     history = history[["timestamp", "close", "regime", "signal"]].tail(n)
@@ -211,6 +280,50 @@ def get_signal_history(signal_df, n=10):
     history["Date"] = history["Date"].dt.date
     history["Price"] = history["Price"].round(2)
     return history.iloc[::-1]
+
+
+def run_portfolio_backtest(asset_symbols, strategy_func, risk_kwargs, total_capital, lookback_days=200):
+    """
+    Splits total_capital equally across the chosen assets, runs the same
+    strategy+risk combo on each, and combines the results into an
+    overall portfolio return -- vs a blended buy-and-hold benchmark.
+    """
+    per_asset_capital = total_capital / len(asset_symbols)
+    rows = []
+    total_final = 0.0
+    total_buyhold = 0.0
+
+    for sym in asset_symbols:
+        try:
+            df = fetch_data(sym, limit=lookback_days)
+            df = prep_data(df)
+            signal_df = strategy_func(df.copy())
+            r = backtest(signal_df, starting_cash=per_asset_capital, fee_rate=0.001, **risk_kwargs)
+
+            rows.append({
+                "Asset": sym,
+                "Allocated": f"${per_asset_capital:.2f}",
+                "Final Value": f"${r['final_value_strategy']:.2f}",
+                "Return %": round(r["strategy_return_pct"], 2),
+                "Buy&Hold %": round(r["buy_hold_return_pct"], 2),
+                "Trades": r["num_trades"],
+            })
+            total_final += r["final_value_strategy"]
+            total_buyhold += r["final_value_buy_hold"]
+        except Exception as e:
+            rows.append({"Asset": sym, "Allocated": "N/A", "Final Value": f"Error: {e}",
+                         "Return %": None, "Buy&Hold %": None, "Trades": None})
+
+    portfolio_return_pct = (total_final / total_capital - 1) * 100
+    buyhold_return_pct = (total_buyhold / total_capital - 1) * 100
+
+    return {
+        "rows": rows,
+        "total_final": total_final,
+        "portfolio_return_pct": portfolio_return_pct,
+        "total_buyhold": total_buyhold,
+        "buyhold_return_pct": buyhold_return_pct,
+    }
 
 
 @st.cache_data(ttl=300)
@@ -321,6 +434,51 @@ st.dataframe(
     overview_df.style.map(highlight_recommendation, subset=["Recommendation"]),
     use_container_width=True, hide_index=True
 )
+
+st.markdown("---")
+st.markdown("### Portfolio backtest")
+st.caption("Split capital across multiple assets at once, using one shared strategy/risk "
+           "combo, and see the combined result -- instead of testing one asset in isolation.")
+
+with st.expander("Run a portfolio backtest"):
+    pf_assets = st.multiselect(
+        "Choose assets to include:", list(ASSET_OPTIONS.keys()),
+        default=["Bitcoin (BTC)", "Ethereum (ETH)"]
+    )
+    pcol1, pcol2, pcol3 = st.columns(3)
+    pf_strategy_choice = pcol1.selectbox(
+        "Strategy:", list(STRATEGY_FUNCS.keys()), key="pf_strategy"
+    )
+    pf_risk_choice = pcol2.selectbox(
+        "Risk style:", list(RISK_STYLES.keys()), index=2, key="pf_risk"
+    )
+    pf_capital = pcol3.number_input(
+        "Total capital ($):", min_value=100.0, value=1000.0, step=100.0, key="pf_capital"
+    )
+
+    if st.button("Run portfolio backtest", type="primary"):
+        if len(pf_assets) == 0:
+            st.warning("Select at least one asset.")
+        else:
+            pf_symbols = [ASSET_OPTIONS[a] for a in pf_assets]
+            pf_func = STRATEGY_FUNCS[pf_strategy_choice]
+            pf_risk_kwargs = dict(RISK_STYLES[pf_risk_choice])
+
+            with st.spinner("Running portfolio backtest across all selected assets..."):
+                pf_results = run_portfolio_backtest(pf_symbols, pf_func, pf_risk_kwargs, pf_capital)
+
+            st.dataframe(pd.DataFrame(pf_results["rows"]), use_container_width=True, hide_index=True)
+
+            rcol1, rcol2 = st.columns(2)
+            rcol1.metric("Portfolio final value", f"${pf_results['total_final']:.2f}",
+                        f"{pf_results['portfolio_return_pct']:.2f}%")
+            rcol2.metric("Blended buy & hold value", f"${pf_results['total_buyhold']:.2f}",
+                        f"{pf_results['buyhold_return_pct']:.2f}%")
+
+            if pf_results["portfolio_return_pct"] > pf_results["buyhold_return_pct"]:
+                st.success("Portfolio beat the blended buy-and-hold benchmark.")
+            else:
+                st.warning("Portfolio underperformed the blended buy-and-hold benchmark.")
 
 st.markdown("---")
 st.markdown("### Asset detail")
