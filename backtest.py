@@ -2,7 +2,14 @@ import pandas as pd
 
 
 def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
-             trailing_stop_pct=None, trailing_stop_col=None, atr_multiplier=2.0):
+             trailing_stop_pct=None, trailing_stop_col=None, atr_multiplier=2.0,
+             risk_per_trade_pct=None):
+    if risk_per_trade_pct is not None and stop_loss_pct is None and \
+       trailing_stop_pct is None and trailing_stop_col is None:
+        raise ValueError("risk_per_trade_pct requires a stop_loss_pct, trailing_stop_pct, "
+                          "or trailing_stop_col to be set -- position sizing needs a defined "
+                          "stop distance to calculate how much to risk per trade.")
+
     cash = starting_cash
     btc_held = 0.0
     in_position = False
@@ -21,7 +28,7 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
         if in_position and stop_loss_pct is not None:
             drop_from_entry = (entry_price - price) / entry_price
             if drop_from_entry >= stop_loss_pct:
-                cash = (btc_held * price) * (1 - fee_rate)
+                cash += (btc_held * price) * (1 - fee_rate)
                 btc_held = 0.0
                 in_position = False
                 entry_price = None
@@ -40,7 +47,7 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
 
             drop_from_peak = (peak_price - price) / peak_price
             if drop_from_peak >= current_trailing_pct:
-                cash = (btc_held * price) * (1 - fee_rate)
+                cash += (btc_held * price) * (1 - fee_rate)
                 btc_held = 0.0
                 in_position = False
                 entry_price = None
@@ -52,19 +59,33 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
                 continue
 
         if signal == "BUY" and not in_position:
-            btc_bought = (cash * (1 - fee_rate)) / price
+            if risk_per_trade_pct is not None:
+                if trailing_stop_col is not None:
+                    stop_distance = row[trailing_stop_col] * atr_multiplier
+                elif trailing_stop_pct is not None:
+                    stop_distance = trailing_stop_pct
+                else:
+                    stop_distance = stop_loss_pct
+
+                risk_amount = cash * risk_per_trade_pct
+                position_dollars = min(cash, risk_amount / stop_distance)
+            else:
+                position_dollars = cash
+
+            btc_bought = (position_dollars * (1 - fee_rate)) / price
             btc_held = btc_bought
-            cash = 0.0
+            cash -= position_dollars
             in_position = True
             entry_price = price
             peak_price = price
             trade_log.append({
                 "date": row["timestamp"], "action": "BUY",
-                "price": price, "btc_held": btc_held, "cash": cash
+                "price": price, "position_dollars": position_dollars,
+                "btc_held": btc_held, "cash": cash
             })
 
         elif signal == "SELL" and in_position:
-            cash = (btc_held * price) * (1 - fee_rate)
+            cash += (btc_held * price) * (1 - fee_rate)
             btc_held = 0.0
             in_position = False
             entry_price = None
@@ -108,11 +129,13 @@ def print_report(results):
         print("Strategy BEAT buy-and-hold.")
     else:
         print("Strategy UNDERPERFORMED buy-and-hold.")
+        print("(This is a very common, honest result -- most simple")
+        print(" rule-based strategies don't beat just holding.)")
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("btc_with_filtered_ma_signals.csv", parse_dates=["timestamp"])
-    results = backtest(df, starting_cash=1000.0, fee_rate=0.001, trailing_stop_col="ATR_pct", atr_multiplier=2.0)
+    df = pd.read_csv("btc_with_signals.csv", parse_dates=["timestamp"])
+    results = backtest(df, starting_cash=1000.0, fee_rate=0.001)
     print_report(results)
 
     trade_df = pd.DataFrame(results["trade_log"])

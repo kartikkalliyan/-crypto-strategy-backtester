@@ -57,6 +57,12 @@ RISK_STYLES = {
     "Fixed 10% stop-loss": {"stop_loss_pct": 0.10},
     "Trailing 10% stop": {"trailing_stop_pct": 0.10},
 }
+POSITION_SIZE_OPTIONS = {
+    "All-in per trade": None,
+    "Risk 1% per trade": 0.01,
+    "Risk 2% per trade": 0.02,
+    "Risk 5% per trade": 0.05,
+}
 
 
 @st.cache_data(ttl=300)
@@ -316,16 +322,27 @@ if symbol in ["SOLUSDT", "BNBUSDT"]:
                f"volatility. Consider trying a different strategy/risk combo below, "
                f"or treat recommendations here with extra caution.")
 
-scol1, scol2 = st.columns(2)
+scol1, scol2, scol3 = st.columns(3)
 strategy_choice = scol1.selectbox(
     "Core strategy:", list(STRATEGY_FUNCS.keys()), key=f"strategy_{symbol}"
 )
 risk_choice = scol2.selectbox(
     "Risk style:", list(RISK_STYLES.keys()), index=2, key=f"risk_{symbol}"
 )
+sizing_choice = scol3.selectbox(
+    "Position sizing:", list(POSITION_SIZE_OPTIONS.keys()), key=f"sizing_{symbol}"
+)
 strategy_func = STRATEGY_FUNCS[strategy_choice]
-risk_kwargs = RISK_STYLES[risk_choice]
+risk_kwargs = dict(RISK_STYLES[risk_choice])  # copy so we can safely add to it
+risk_per_trade_pct = POSITION_SIZE_OPTIONS[sizing_choice]
 
+if risk_per_trade_pct is not None:
+    if risk_choice == "No stop-loss":
+        st.warning("Risk-based position sizing needs a stop-loss to size against -- "
+                   "using 'All-in per trade' instead since 'No stop-loss' is selected. "
+                   "Pick a stop-loss risk style above to enable sizing.")
+    else:
+        risk_kwargs["risk_per_trade_pct"] = risk_per_trade_pct
 mode = st.radio(
     "Backtest window:", ["By number of days", "By number of trades"],
     horizontal=True, key=f"mode_{symbol}"
