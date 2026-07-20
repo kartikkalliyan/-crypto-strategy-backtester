@@ -282,6 +282,49 @@ def get_signal_history(signal_df, n=10):
     return history.iloc[::-1]
 
 
+def run_optimizer(symbol, lookback_days=200):
+    """
+    Tests every strategy x risk style combo (21 total) on the same data
+    and ranks them by return. NOTE: the top result here is NOT
+    automatically the "best" strategy going forward -- it's whichever
+    combo happened to fit this specific historical window best, which
+    can just be overfitting (we proved this ourselves earlier in this
+    project with the candlestick strategy). Use this as a starting
+    point for further validation (train/test split, multiple periods),
+    not as a final answer.
+    """
+    df = fetch_data(symbol, limit=lookback_days)
+    df = prep_data(df)
+
+    results = []
+    for strat_name, strat_func in STRATEGY_FUNCS.items():
+        try:
+            signal_df = strat_func(df.copy())
+        except Exception as e:
+            results.append({"Strategy": strat_name, "Risk Style": "N/A", "Return %": None,
+                            "Buy&Hold %": None, "Beat B&H?": f"Error: {e}", "Trades": None})
+            continue
+
+        for risk_name, risk_kwargs in RISK_STYLES.items():
+            try:
+                r = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001, **risk_kwargs)
+                results.append({
+                    "Strategy": strat_name,
+                    "Risk Style": risk_name,
+                    "Return %": round(r["strategy_return_pct"], 2),
+                    "Buy&Hold %": round(r["buy_hold_return_pct"], 2),
+                    "Beat B&H?": "YES" if r["strategy_return_pct"] > r["buy_hold_return_pct"] else "no",
+                    "Trades": r["num_trades"],
+                })
+            except Exception as e:
+                results.append({"Strategy": strat_name, "Risk Style": risk_name, "Return %": None,
+                                "Buy&Hold %": None, "Beat B&H?": f"Error: {e}", "Trades": None})
+
+    results_df = pd.DataFrame(results)
+    results_df = results_df.sort_values("Return %", ascending=False, na_position="last")
+    return results_df
+
+
 def run_portfolio_backtest(asset_symbols, strategy_func, risk_kwargs, total_capital, lookback_days=200):
     """
     Splits total_capital equally across the chosen assets, runs the same
@@ -479,6 +522,33 @@ with st.expander("Run a portfolio backtest"):
                 st.success("Portfolio beat the blended buy-and-hold benchmark.")
             else:
                 st.warning("Portfolio underperformed the blended buy-and-hold benchmark.")
+
+st.markdown("---")
+st.markdown("### Auto-optimizer")
+st.caption("Tests every strategy x risk style combo (21 total) on one asset and ranks them.")
+st.warning("Important: the top-ranked combo here is whichever one happened to fit THIS "
+           "specific historical window best -- that can easily be overfitting rather than "
+           "a real edge (we proved this ourselves earlier with the candlestick strategy, "
+           "which looked great on one window and fell apart on others). Treat this as a "
+           "starting point to investigate further -- re-check any promising combo with a "
+           "train/test split and on other assets before trusting it.")
+
+with st.expander("Run auto-optimizer"):
+    opt_asset = st.selectbox("Asset to optimize:", list(ASSET_OPTIONS.keys()), key="opt_asset")
+    opt_days = st.slider("Days of history to test on:", min_value=60, max_value=1000,
+                         value=200, step=10, key="opt_days")
+
+    if st.button("Run auto-optimizer", type="primary"):
+        opt_symbol = ASSET_OPTIONS[opt_asset]
+        with st.spinner("Testing 21 strategy/risk combos... this may take a moment"):
+            opt_results = run_optimizer(opt_symbol, opt_days)
+
+        st.dataframe(opt_results, use_container_width=True, hide_index=True)
+
+        best_row = opt_results.iloc[0]
+        st.info(f"Top result on this window: **{best_row['Strategy']}** with "
+                f"**{best_row['Risk Style']}** ({best_row['Return %']}% return). "
+                f"Go validate this combo properly before trusting it with real decisions.")
 
 st.markdown("---")
 st.markdown("### Asset detail")
