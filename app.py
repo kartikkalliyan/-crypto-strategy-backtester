@@ -157,7 +157,20 @@ def get_recommendation(df, strategy_func):
     recommendation = latest["signal"]
     reason = reason_for_signal(recommendation)
     return recommendation, reason, latest, signal_df
-
+def get_consensus(df):
+    """
+    Runs EVERY strategy on the same data and returns each one's current
+    signal, so you can see how much agreement there is rather than
+    trusting a single strategy's opinion in isolation.
+    """
+    votes = {}
+    for name, func in STRATEGY_FUNCS.items():
+        try:
+            sdf = func(df.copy())
+            votes[name] = sdf.iloc[-1]["signal"]
+        except Exception:
+            votes[name] = "N/A"
+    return votes
 
 def run_track_record(signal_df, risk_kwargs):
     results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001, **risk_kwargs)
@@ -399,6 +412,28 @@ if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
     st.caption("Context: markets are choppy about 80% of the time historically -- "
                "many strategies are designed to sit out these periods rather than "
                "guess, which may be intentional rather than a malfunction.")
+st.markdown("#### Strategy consensus")
+st.caption("How the other strategies vote on this same asset right now.")
+votes = get_consensus(df)
+buy_count = sum(1 for v in votes.values() if v == "BUY")
+sell_count = sum(1 for v in votes.values() if v == "SELL")
+hold_count = sum(1 for v in votes.values() if v == "HOLD")
+total = len(votes)
+
+vcol1, vcol2, vcol3 = st.columns(3)
+vcol1.metric("BUY votes", f"{buy_count}/{total}")
+vcol2.metric("SELL votes", f"{sell_count}/{total}")
+vcol3.metric("HOLD votes", f"{hold_count}/{total}")
+
+if buy_count >= total * 0.6:
+    st.success(f"Strong agreement: {buy_count} of {total} strategies say BUY.")
+elif sell_count >= total * 0.6:
+    st.error(f"Strong agreement: {sell_count} of {total} strategies say SELL.")
+else:
+    st.info("Mixed signals across strategies -- no strong consensus right now.")
+
+vote_table = pd.DataFrame(list(votes.items()), columns=["Strategy", "Current Signal"])
+st.dataframe(vote_table, use_container_width=True, hide_index=True)
 
 st.plotly_chart(make_candlestick_chart(df.tail(300), title=f"{asset_label} - Price with MA20/MA50"),
                 use_container_width=True)
