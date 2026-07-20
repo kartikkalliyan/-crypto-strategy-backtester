@@ -17,6 +17,7 @@ Run with:
 import streamlit as st
 import pandas as pd
 import requests
+import os
 import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -57,6 +58,7 @@ RISK_STYLES = {
     "Fixed 10% stop-loss": {"stop_loss_pct": 0.10},
     "Trailing 10% stop": {"trailing_stop_pct": 0.10},
 }
+
 POSITION_SIZE_OPTIONS = {
     "All-in per trade": None,
     "Risk 1% per trade": 0.01,
@@ -157,6 +159,8 @@ def get_recommendation(df, strategy_func):
     recommendation = latest["signal"]
     reason = reason_for_signal(recommendation)
     return recommendation, reason, latest, signal_df
+
+
 def get_consensus(df):
     """
     Runs EVERY strategy on the same data and returns each one's current
@@ -172,9 +176,30 @@ def get_consensus(df):
             votes[name] = "N/A"
     return votes
 
+
 def run_track_record(signal_df, risk_kwargs):
     results = backtest(signal_df, starting_cash=1000.0, fee_rate=0.001, **risk_kwargs)
     return results
+
+
+JOURNAL_FILE = "trade_journal.csv"
+
+
+def load_journal():
+    if os.path.isfile(JOURNAL_FILE):
+        return pd.read_csv(JOURNAL_FILE, parse_dates=["Date"])
+    return pd.DataFrame(columns=["Date", "Asset", "Strategy", "Action", "Price", "Notes"])
+
+
+def add_journal_entry(date, asset, strategy, action, price, notes):
+    journal = load_journal()
+    new_entry = pd.DataFrame([{
+        "Date": date, "Asset": asset, "Strategy": strategy,
+        "Action": action, "Price": price, "Notes": notes
+    }])
+    journal = pd.concat([journal, new_entry], ignore_index=True)
+    journal.to_csv(JOURNAL_FILE, index=False)
+    return journal
 
 
 def get_signal_history(signal_df, n=10):
@@ -346,7 +371,7 @@ sizing_choice = scol3.selectbox(
     "Position sizing:", list(POSITION_SIZE_OPTIONS.keys()), key=f"sizing_{symbol}"
 )
 strategy_func = STRATEGY_FUNCS[strategy_choice]
-risk_kwargs = dict(RISK_STYLES[risk_choice])  # copy so we can safely add to it
+risk_kwargs = dict(RISK_STYLES[risk_choice])
 risk_per_trade_pct = POSITION_SIZE_OPTIONS[sizing_choice]
 
 if risk_per_trade_pct is not None:
@@ -356,6 +381,7 @@ if risk_per_trade_pct is not None:
                    "Pick a stop-loss risk style above to enable sizing.")
     else:
         risk_kwargs["risk_per_trade_pct"] = risk_per_trade_pct
+
 mode = st.radio(
     "Backtest window:", ["By number of days", "By number of trades"],
     horizontal=True, key=f"mode_{symbol}"
@@ -412,6 +438,7 @@ if recommendation == "HOLD" and latest["regime"] == "CHOPPY":
     st.caption("Context: markets are choppy about 80% of the time historically -- "
                "many strategies are designed to sit out these periods rather than "
                "guess, which may be intentional rather than a malfunction.")
+
 st.markdown("#### Strategy consensus")
 st.caption("How the other strategies vote on this same asset right now.")
 votes = get_consensus(df)
@@ -464,6 +491,31 @@ if len(history) > 0:
     st.dataframe(history, use_container_width=True, hide_index=True)
 else:
     st.write("No BUY/SELL signals in the recent history window.")
+
+st.markdown("---")
+st.markdown("### Trade journal")
+st.caption("Log what you actually did in real life, so you can track real outcomes "
+           "over time -- separate from the backtest above.")
+
+with st.form(key=f"journal_form_{symbol}"):
+    jcol1, jcol2, jcol3 = st.columns(3)
+    entry_date = jcol1.date_input("Date", value=datetime.now())
+    entry_action = jcol2.selectbox("Action taken", ["BUY", "SELL", "HOLD (no action)"])
+    entry_price = jcol3.number_input("Price", value=float(latest["close"]), format="%.2f")
+    entry_notes = st.text_input("Notes (optional)", placeholder="e.g. only bought half position")
+    submitted = st.form_submit_button("Log this entry")
+
+    if submitted:
+        add_journal_entry(entry_date, asset_label, strategy_choice, entry_action, entry_price, entry_notes)
+        st.success("Entry logged.")
+
+journal = load_journal()
+asset_journal = journal[journal["Asset"] == asset_label] if len(journal) > 0 else journal
+if len(asset_journal) > 0:
+    st.dataframe(asset_journal.sort_values("Date", ascending=False),
+                 use_container_width=True, hide_index=True)
+else:
+    st.write("No journal entries for this asset yet.")
 
 st.markdown("---")
 st.caption("Pick a strategy, risk style, and backtest window above for each asset -- "
