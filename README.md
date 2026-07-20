@@ -1,11 +1,8 @@
-# 🚀 Crypto Strategy Backtester
+# CurrencyKartz
 
-A modular cryptocurrency trading strategy research framework built in Python.
+An open-source quantitative trading research platform for cryptocurrency markets.
 
-This project allows traders and developers to develop, test and compare multiple trading strategies on historical cryptocurrency data before deploying them to live markets.
-
-Unlike a simple moving average crossover project, this repository includes multiple trading strategies, market regime detection, crash testing, multi-asset evaluation and live signal generation.
-
+CurrencyKartz provides a modular framework for developing, testing, comparing, and optimizing algorithmic trading strategies using historical market data.
 ---
 
 ## Features
