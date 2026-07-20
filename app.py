@@ -588,7 +588,7 @@ if symbol in ["SOLUSDT", "BNBUSDT"]:
                f"volatility. Consider trying a different strategy/risk combo below, "
                f"or treat recommendations here with extra caution.")
 
-scol1, scol2, scol3 = st.columns(3)
+scol1, scol2, scol3, scol4 = st.columns(4)
 strategy_choice = scol1.selectbox(
     "Core strategy:", list(STRATEGY_FUNCS.keys()), key=f"strategy_{symbol}"
 )
@@ -598,9 +598,19 @@ risk_choice = scol2.selectbox(
 sizing_choice = scol3.selectbox(
     "Position sizing:", list(POSITION_SIZE_OPTIONS.keys()), key=f"sizing_{symbol}"
 )
+SLIPPAGE_OPTIONS = {
+    "None (unrealistic best case)": 0.0,
+    "Low (0.1%, liquid major coins)": 0.001,
+    "Medium (0.5%, typical altcoins)": 0.005,
+    "High (1%, thin/illiquid markets)": 0.01,
+}
+slippage_choice = scol4.selectbox(
+    "Slippage assumption:", list(SLIPPAGE_OPTIONS.keys()), index=1, key=f"slippage_{symbol}"
+)
 strategy_func = STRATEGY_FUNCS[strategy_choice]
 risk_kwargs = dict(RISK_STYLES[risk_choice])
 risk_per_trade_pct = POSITION_SIZE_OPTIONS[sizing_choice]
+risk_kwargs["slippage_pct"] = SLIPPAGE_OPTIONS[slippage_choice]
 
 if risk_per_trade_pct is not None:
     if risk_choice == "No stop-loss":

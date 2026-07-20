@@ -1,9 +1,44 @@
+"""
+PHASE 5: Backtesting.
+
+This answers the real question: if you had followed every BUY/SELL
+signal exactly, with real money and real trading fees, would you have
+ended up ahead or behind -- compared to simply buying BTC once and
+holding it the whole time?
+
+No live trading, no predictions -- just an honest historical check.
+"""
+
 import pandas as pd
 
 
 def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
              trailing_stop_pct=None, trailing_stop_col=None, atr_multiplier=2.0,
-             risk_per_trade_pct=None):
+             risk_per_trade_pct=None, slippage_pct=0.0):
+    """
+    starting_cash      : hypothetical starting capital (e.g. $1000)
+    fee_rate           : trading fee per transaction (0.001 = 0.1%)
+    stop_loss_pct      : fixed stop-loss from entry price. None = disabled.
+    trailing_stop_pct  : FIXED trailing stop (e.g. 0.10 for 10%), same
+                         percentage for every day. None = disabled.
+    trailing_stop_col  : name of a column in df (e.g. "ATR_pct") to use
+                         as a DYNAMIC, per-day trailing stop instead of a
+                         fixed percentage. If set, overrides trailing_stop_pct.
+    atr_multiplier     : how many multiples of ATR_pct to use as the stop
+                         distance when trailing_stop_col is set (default 2x).
+    risk_per_trade_pct : if set (e.g. 0.02 for 2%), only risks this fraction
+                         of current capital per trade, sized using the
+                         active stop distance. None = disabled (all-in).
+    slippage_pct       : extra cost per transaction beyond the flat fee,
+                         representing the real-world gap between the price
+                         you see and the price you actually get filled at
+                         (0.001 = 0.1%). Buys execute slightly worse (higher)
+                         and sells execute slightly worse (lower) than the
+                         quoted close price. Real markets, especially less
+                         liquid ones, always have some slippage -- 0 is the
+                         unrealistic best case. Default 0.0 = disabled,
+                         matching original behavior.
+    """
     if risk_per_trade_pct is not None and stop_loss_pct is None and \
        trailing_stop_pct is None and trailing_stop_col is None:
         raise ValueError("risk_per_trade_pct requires a stop_loss_pct, trailing_stop_pct, "
@@ -19,23 +54,25 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
     trade_log = []
 
     for _, row in df.iterrows():
-        price = row["close"]
+        price = row["close"]  # the quoted market price -- signals/stops trigger on this
         signal = row["signal"]
 
         if in_position:
             peak_price = max(peak_price, price)
 
+        # --- Stop-loss checks happen FIRST, before the normal signal logic ---
         if in_position and stop_loss_pct is not None:
             drop_from_entry = (entry_price - price) / entry_price
             if drop_from_entry >= stop_loss_pct:
-                cash += (btc_held * price) * (1 - fee_rate)
+                exec_price = price * (1 - slippage_pct)  # sells fill slightly worse than quoted
+                cash += (btc_held * exec_price) * (1 - fee_rate)
                 btc_held = 0.0
                 in_position = False
                 entry_price = None
                 peak_price = None
                 trade_log.append({
                     "date": row["timestamp"], "action": "STOP_LOSS_SELL",
-                    "price": price, "btc_held": btc_held, "cash": cash
+                    "price": exec_price, "btc_held": btc_held, "cash": cash
                 })
                 continue
 
@@ -47,19 +84,22 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
 
             drop_from_peak = (peak_price - price) / peak_price
             if drop_from_peak >= current_trailing_pct:
-                cash += (btc_held * price) * (1 - fee_rate)
+                exec_price = price * (1 - slippage_pct)
+                cash += (btc_held * exec_price) * (1 - fee_rate)
                 btc_held = 0.0
                 in_position = False
                 entry_price = None
                 peak_price = None
                 trade_log.append({
                     "date": row["timestamp"], "action": "TRAILING_STOP_SELL",
-                    "price": price, "btc_held": btc_held, "cash": cash
+                    "price": exec_price, "btc_held": btc_held, "cash": cash
                 })
                 continue
 
         if signal == "BUY" and not in_position:
             if risk_per_trade_pct is not None:
+                # Figure out today's stop distance, to size the position so
+                # a full stop-out only loses risk_per_trade_pct of capital.
                 if trailing_stop_col is not None:
                     stop_distance = row[trailing_stop_col] * atr_multiplier
                 elif trailing_stop_pct is not None:
@@ -70,34 +110,39 @@ def backtest(df, starting_cash=1000.0, fee_rate=0.001, stop_loss_pct=None,
                 risk_amount = cash * risk_per_trade_pct
                 position_dollars = min(cash, risk_amount / stop_distance)
             else:
+                # Old behavior: spend all available cash
                 position_dollars = cash
 
-            btc_bought = (position_dollars * (1 - fee_rate)) / price
+            exec_price = price * (1 + slippage_pct)  # buys fill slightly worse than quoted
+            btc_bought = (position_dollars * (1 - fee_rate)) / exec_price
             btc_held = btc_bought
             cash -= position_dollars
             in_position = True
-            entry_price = price
+            entry_price = price  # stops still measure against the real quoted price
             peak_price = price
             trade_log.append({
                 "date": row["timestamp"], "action": "BUY",
-                "price": price, "position_dollars": position_dollars,
+                "price": exec_price, "position_dollars": position_dollars,
                 "btc_held": btc_held, "cash": cash
             })
 
         elif signal == "SELL" and in_position:
-            cash += (btc_held * price) * (1 - fee_rate)
+            exec_price = price * (1 - slippage_pct)
+            cash += (btc_held * exec_price) * (1 - fee_rate)
             btc_held = 0.0
             in_position = False
             entry_price = None
             peak_price = None
             trade_log.append({
                 "date": row["timestamp"], "action": "SELL",
-                "price": price, "btc_held": btc_held, "cash": cash
+                "price": exec_price, "btc_held": btc_held, "cash": cash
             })
 
+    # If still holding BTC at the end, value it at the last price
     final_price = df.iloc[-1]["close"]
     final_value = cash + (btc_held * final_price)
 
+    # --- Buy-and-hold baseline for comparison ---
     first_price = df.iloc[0]["close"]
     buy_hold_btc = (starting_cash * (1 - fee_rate)) / first_price
     buy_hold_value = buy_hold_btc * final_price
@@ -138,6 +183,7 @@ if __name__ == "__main__":
     results = backtest(df, starting_cash=1000.0, fee_rate=0.001)
     print_report(results)
 
+    # Save trade-by-trade log for inspection
     trade_df = pd.DataFrame(results["trade_log"])
     trade_df.to_csv("backtest_trade_log.csv", index=False)
     print("\nFull trade log saved to backtest_trade_log.csv")
